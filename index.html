@@ -31,7 +31,7 @@
             /* Configurable border radiuses */
             --radius-xl: 32px;
             --radius-lg: 24px;
-            --radius-md: 14px;
+            --radius-md: 20px;
 
             /* Configurable padding for compact mode */
             --panel-pad: 30px;
@@ -45,6 +45,21 @@
             --ease-elastic: cubic-bezier(0.175, 0.885, 0.32, 1.275);
             --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
             --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        /* Glows */
+        .Glows {
+            display: none;
+            width: 40px;
+            height: 40px;
+            position: fixed;
+            border-radius: 50%;
+            pointer-events: none;
+            background: rgba(255, 255, 255, 0.121);
+            box-shadow:
+                0px 0px 90px rgb(255, 255, 255),
+                0px 0px 150px rgb(255, 255, 255);
+            transform: translate(-50%, -50%);
         }
 
         /* Reduced Motion */
@@ -73,6 +88,10 @@
         }
 
         body.simple-bg #particlesCanvas {
+            display: none !important;
+        }
+
+        body.simple-bg .Glows {
             display: none !important;
         }
 
@@ -1050,6 +1069,7 @@
             font-weight: 700;
             margin-bottom: 15px;
             letter-spacing: 0.5px;
+
         }
 
         .pt-wrapper {
@@ -1566,6 +1586,9 @@
     <!-- Particles Background -->
     <canvas id="particlesCanvas"></canvas>
 
+    <!-- Glows -->
+    <div class="Glows"></div>
+
     <!-- Privacy Panic Overlay -->
     <div id="privacyOverlay">
         <i class="ph ph-eye-closed" style="font-size: 5rem; margin-bottom: 20px;"></i>
@@ -1730,6 +1753,17 @@
                                 </div>
                             </div>
                             <input type="checkbox" id="checkParticles" onchange="toggleParticles(this.checked)"
+                                style="width:20px; height:20px; accent-color:var(--primary);">
+                        </label>
+                        <label
+                            style="display:flex; align-items:center; justify-content:space-between; cursor:pointer; padding:15px 20px; background:rgba(255,255,255,0.03); border-radius:10px; border:1px solid var(--glass-border);">
+                            <div>
+                                <div style="font-weight:600;">Cursor Glows</div>
+                                <div style="font-size:0.8rem; color:var(--text-muted);">Enable Background Glow of the
+                                    Cursor
+                                </div>
+                            </div>
+                            <input type="checkbox" id="checkGlows" onchange="toggleGlows(this.checked)"
                                 style="width:20px; height:20px; accent-color:var(--primary);">
                         </label>
                         <label
@@ -1954,6 +1988,7 @@
             </nav>
 
             <div style="display:flex; gap:15px; align-items:center;">
+
                 <button class="btn btn-ghost btn-icon" onclick="showTutorial()" data-tooltip="Help & Tour"
                     style="width:40px; height:40px; padding:0; display:flex; align-items:center; justify-content:center;"><i
                         class="ph ph-question"></i></button>
@@ -3129,6 +3164,96 @@
         let geminiApiKey = localStorage.getItem('quest_gemini_api_key') || '';
         let webSearchType = 'all';
 
+        // --- CLOUD SYNC LOGIC ---
+        let firebaseApp, auth, db, currentUser = null, isSyncing = false;
+        async function initCloudSetup() {
+            try {
+                const { initializeApp } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js");
+                const { getAuth, onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, signInWithCustomToken, signInAnonymously } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js");
+                const { getFirestore, doc, setDoc, getDoc } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js");
+
+                const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'oasis-ai-db';
+
+                if (!firebaseConfig || Object.keys(firebaseConfig).length === 0) return;
+
+                firebaseApp = initializeApp(firebaseConfig);
+                auth = getAuth(firebaseApp);
+                db = getFirestore(firebaseApp);
+
+                const initAuth = async () => {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                };
+                await initAuth();
+
+                onAuthStateChanged(auth, async (user) => {
+                    currentUser = user;
+                    const loginBtn = $('loginBtnTop');
+                    if (user && !user.isAnonymous) {
+                        if (loginBtn) loginBtn.innerHTML = `<img src="${user.photoURL || './assets/Oasis Logo copy.png'}" style="width:24px;height:24px;border-radius:50%;"> <span style="font-size: 0.9rem;">${user.displayName.split(' ')[0]}</span>`;
+                        updateName(user.displayName);
+                        if (user.photoURL) updateAvatar(user.photoURL);
+
+                        try {
+                            const docSnap = await getDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'oasis_state', 'v1'));
+                            if (docSnap.exists()) {
+                                const data = docSnap.data();
+                                if (data.tasks) tasks = data.tasks;
+                                if (data.notesData) notesData = data.notesData;
+                                if (data.flashcards) flashcards = data.flashcards;
+                                if (data.expenses) expenses = data.expenses;
+                                if (data.userXP !== undefined) userXP = data.userXP;
+                                if (data.timetableData) timetableData = data.timetableData;
+                                if (data.quickLinks) quickLinks = data.quickLinks;
+
+                                renderKanban(); renderNotesSidebar(); renderFinance();
+                                renderSchedule(); renderQuickLinks(); updateLevel();
+                                if (notesData.length > 0) selectNote(notesData[0].id);
+                            }
+                        } catch (e) { console.error("Load error", e); }
+                    } else {
+                        if (loginBtn) loginBtn.innerHTML = `<i class="ph ph-google-logo"></i> Sign In`;
+                    }
+                });
+
+                window.handleGoogleLogin = async () => {
+                    if (currentUser && !currentUser.isAnonymous) {
+                        if (confirm("Sign out of Cloud Sync?")) {
+                            await signOut(auth);
+                            await initAuth();
+                            location.reload();
+                        }
+                        return;
+                    }
+                    try {
+                        $('loginBtnTop').innerHTML = `<i class="ph ph-spinner ph-spin"></i>`;
+                        await signInWithPopup(auth, new GoogleAuthProvider());
+                    } catch (e) {
+                        console.error("Login failed", e);
+                        $('loginBtnTop').innerHTML = `<i class="ph ph-google-logo"></i> Sign In`;
+                    }
+                };
+
+                window.syncToCloud = async () => {
+                    if (!currentUser || currentUser.isAnonymous || isIncognito) return;
+                    isSyncing = true;
+                    if ($('cloudSyncStatus')) $('cloudSyncStatus').style.opacity = '1';
+                    try {
+                        await setDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'oasis_state', 'v1'), {
+                            tasks, notesData, flashcards, expenses, userXP, timetableData, quickLinks
+                        });
+                    } catch (e) { console.error("Sync error", e); }
+                    setTimeout(() => { if ($('cloudSyncStatus')) $('cloudSyncStatus').style.opacity = '0'; }, 2000);
+                    isSyncing = false;
+                };
+            } catch (e) { console.error("Firebase init failed", e); }
+        }
+
+
         // --- FETCH WITH BACKOFF UTILITY ---
         async function fetchWithBackoff(url, options, maxRetries = 5) {
             let delay = 1000;
@@ -3216,6 +3341,27 @@
             else { ctx.clearRect(0, 0, canvas.width, canvas.height); canvas.style.display = 'none'; }
         }
 
+        // --- Cursor-Glow --- //
+        const cursor = document.querySelector(".Glows");
+        let GlowsEnabled = false;
+
+        document.addEventListener("mousemove", (e) => {
+            if (!GlowsEnabled) return;
+            cursor.style.left = e.clientX + "px";
+            cursor.style.top = e.clientY + "px";
+        });
+
+        function toggleGlows(checked) {
+            GlowsEnabled = checked;
+            if (!isIncognito) localStorage.setItem('quest_Glows', checked);
+
+            if (checked) {
+                cursor.style.display = 'block';
+            } else {
+                cursor.style.display = 'none';
+            }
+        }
+
         // --- GLOBAL UTILS ---
         function updateTime() {
             const now = new Date();
@@ -3234,6 +3380,7 @@
             userXP += amount;
             if (!isIncognito) localStorage.setItem('quest_xp', userXP);
             updateLevel();
+            if (window.syncToCloud) window.syncToCloud();
         }
 
         function updateLevel() {
@@ -3437,6 +3584,7 @@
                 quickLinks.push({ url, name, icon: 'ph-link' });
                 if (!isIncognito) localStorage.setItem('quest_links', JSON.stringify(quickLinks));
                 renderQuickLinks();
+                if (window.syncToCloud) window.syncToCloud();
             }
         }
 
@@ -3446,6 +3594,7 @@
                 quickLinks.splice(index, 1);
                 if (!isIncognito) localStorage.setItem('quest_links', JSON.stringify(quickLinks));
                 renderQuickLinks();
+                if (window.syncToCloud) window.syncToCloud();
             }
         }
 
@@ -3493,6 +3642,7 @@
             if (!isIncognito) localStorage.setItem('quest_notes_data', JSON.stringify(notesData));
             updateNoteStats();
             renderNotesSidebar();
+            if (window.syncToCloud) window.syncToCloud();
         }
 
         function deleteCurrentNote() {
@@ -3511,6 +3661,7 @@
 
                 if (!isIncognito) localStorage.setItem('quest_notes_data', JSON.stringify(notesData));
                 renderNotesSidebar();
+                if (window.syncToCloud) window.syncToCloud();
             }
         }
 
@@ -3537,6 +3688,7 @@
                     if (!isIncognito) localStorage.setItem('quest_notes_data', JSON.stringify(notesData));
                     $('noteSaveStatus').style.opacity = '1';
                     setTimeout(() => { $('noteSaveStatus').style.opacity = '0'; }, 2000);
+                    if (window.syncToCloud) window.syncToCloud();
                 }, 800);
             }
         }
@@ -3652,6 +3804,7 @@
 
                 if (!isIncognito) localStorage.setItem('quest_timetable', JSON.stringify(timetableData));
                 renderSchedule();
+                if (window.syncToCloud) window.syncToCloud();
             }
         }
 
@@ -3660,6 +3813,7 @@
                 timetableData = {};
                 if (!isIncognito) localStorage.removeItem('quest_timetable');
                 renderSchedule();
+                if (window.syncToCloud) window.syncToCloud();
             }
         }
 
@@ -3951,6 +4105,7 @@
             if (!isIncognito) localStorage.setItem('quest_flashcards', JSON.stringify(flashcards));
             alert("Flashcard saved successfully!");
             currentCard = flashcards.length - 1; renderFlashcard();
+            if (window.syncToCloud) window.syncToCloud();
         }
 
         // --- KANBAN TASK BOARD ---
@@ -3983,7 +4138,7 @@
             if (text && text.trim()) { tasks.push({ id: Date.now(), text: text.trim(), status, tag: 'Study' }); saveTasks(); }
         }
         function delTask(id) { tasks = tasks.filter(t => t.id !== id); saveTasks(); }
-        function saveTasks() { if (!isIncognito) localStorage.setItem('quest_tasks', JSON.stringify(tasks)); renderKanban(); }
+        function saveTasks() { if (!isIncognito) localStorage.setItem('quest_tasks', JSON.stringify(tasks)); renderKanban(); if (window.syncToCloud) window.syncToCloud(); }
         function allowDrop(ev) { ev.preventDefault(); }
         function drag(ev, id) { ev.dataTransfer.setData("text", id); }
         function drop(ev, status) { ev.preventDefault(); const id = parseInt(ev.dataTransfer.getData("text")); const t = tasks.find(x => x.id === id); if (t) { t.status = status; if (status === 'done') addXP(50); saveTasks(); } }
@@ -4392,7 +4547,7 @@
             const desc = $('expDesc').value; const amt = parseFloat($('expAmount').value); const cat = $('expCategory').value;
             if (desc && !isNaN(amt)) { expenses.unshift({ desc, amt, cat, date: new Date().toLocaleDateString() }); if (!isIncognito) localStorage.setItem('quest_finance', JSON.stringify(expenses)); $('expDesc').value = ''; $('expAmount').value = ''; renderFinance(); }
         }
-        function delExpense(index) { expenses.splice(index, 1); if (!isIncognito) localStorage.setItem('quest_finance', JSON.stringify(expenses)); renderFinance(); }
+        function delExpense(index) { expenses.splice(index, 1); if (!isIncognito) localStorage.setItem('quest_finance', JSON.stringify(expenses)); renderFinance(); if (window.syncToCloud) window.syncToCloud(); }
 
         // --- DATA & API UTILS ---
         function updateName(name) { if (!name) name = "Student"; $('userNameDisplay').innerText = name; if (!isIncognito) localStorage.setItem('quest_name', name); }
@@ -4417,6 +4572,7 @@
 
         // --- APP INITIALIZATION ---
         window.onload = () => {
+            initCloudSetup();
             // Hide welcome screen
             setTimeout(() => {
                 const screen = $('welcomeScreen');
@@ -4474,6 +4630,17 @@
             if (savedParticles === 'false') {
                 particlesEnabled = false; if ($('checkParticles')) $('checkParticles').checked = false; if (canvas) canvas.style.display = 'none';
             } else { if ($('checkParticles')) $('checkParticles').checked = true; initParticles(); handleParticles(); }
+
+            const savedGlows = localStorage.getItem('quest_Glows');
+            if (savedGlows === 'true') {
+                GlowsEnabled = true;
+                if ($('checkGlows')) $('checkGlows').checked = true;
+                if (cursor) cursor.style.display = 'block';
+            } else {
+                GlowsEnabled = false;
+                if ($('checkGlows')) $('checkGlows').checked = false;
+                if (cursor) cursor.style.display = 'none';
+            }
 
             const savedName = localStorage.getItem('quest_name');
             if (savedName) { if ($('userNameDisplay')) $('userNameDisplay').innerText = savedName; if ($('settingName')) $('settingName').value = savedName; }
